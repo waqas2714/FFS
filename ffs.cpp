@@ -103,6 +103,38 @@ void importFile(const string& filename) {
     cout << "Imported " << filename << " (" << read_bytes << " bytes)\n";
 }
 
+
+void listFiles() {
+    fstream ffs(FFS_FILENAME, ios::in | ios::binary);
+    if (!ffs.is_open()) {
+        cout << "Error: cannot open FFS storage\n";
+        return;
+    }
+
+    vector<char> inode_bitmap(INODE_BITMAP_SIZE);
+    ffs.seekg(0);
+    ffs.read(inode_bitmap.data(), INODE_BITMAP_SIZE);
+
+    bool anyFile = false;
+
+    for (int i = 0; i < INODE_BITMAP_SIZE; i++) {
+        if (inode_bitmap[i] == 1) {
+            anyFile = true;
+
+            long inode_offset = INODE_BITMAP_SIZE + DATA_BITMAP_SIZE + (i * BLOCK_SIZE);
+            ffs.seekg(inode_offset);
+            Inode inode{};
+            ffs.read(reinterpret_cast<char*>(&inode), sizeof(Inode));
+
+            cout << inode.filename << " " << inode.filesize << " bytes" << endl;
+        }
+    }
+
+    if (!anyFile)
+        cout << "(No files in FFS)" << endl;
+}
+
+
 int main() {
     initFFS();
     cout << "$ ";  
@@ -131,7 +163,7 @@ int main() {
             else importFile(filename);
         }
         else if (cmd == "ls") {
-            cout << "Listing files (stub)...\n";
+            listFiles();
         } 
         else if (cmd == "del") {
             string filename;
