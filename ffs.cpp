@@ -1,10 +1,110 @@
 #include <iostream>
 #include <string>
 #include <sstream>
+#include <fstream>
+#include <vector>
+#include <filesystem>
+#include <cstring>
 
 using namespace std;
+namespace fs = std::filesystem;
+
+#define INODE_BITMAP_SIZE 4096     
+#define DATA_BITMAP_SIZE 4096      
+#define INODE_TABLE_SIZE (4096 * 1024)  
+#define DATA_BLOCKS_SIZE (4096 * 1024)  
+#define FFS_TOTAL_SIZE (INODE_BITMAP_SIZE + DATA_BITMAP_SIZE + INODE_TABLE_SIZE + DATA_BLOCKS_SIZE)
+
+#define BLOCK_SIZE 4096
+#define MAX_FILENAME 256
+#define MAX_DIRECT_PTRS 500
+#define MAX_FILE_SIZE (4 * 1024 * 1024)
+
+const string FFS_FILENAME = "ffs_data";
+
+struct Inode {
+    char filename[MAX_FILENAME];
+    int filesize;
+    int direct_ptrs[MAX_DIRECT_PTRS];
+    int indirect_ptr;
+};
+
+void initFFS() {
+    if (!fs::exists(FFS_FILENAME)) {
+        ofstream f(FFS_FILENAME, ios::binary);
+        vector<char> zero(FFS_TOTAL_SIZE, 0);
+        f.write(zero.data(), zero.size());
+        f.close();
+    }
+}
+
+int findFreeIndex(vector<char>& bitmap) {
+    for (int i = 0; i < (int)bitmap.size(); i++) {
+        if (bitmap[i] == 0) return i;
+    }
+    return -1; 
+}
+
+void importFile(const string& filename) {
+    ifstream src(filename, ios::binary);
+    if (!src.is_open()) {
+        cout << "Error: cannot open " << filename << endl;
+        return;
+    }
+
+    fstream ffs(FFS_FILENAME, ios::in | ios::out | ios::binary);
+    if (!ffs.is_open()) {
+        cout << "Error: cannot open FFS storage\n";
+        return;
+    }
+
+    vector<char> inode_bitmap(INODE_BITMAP_SIZE);
+    vector<char> data_bitmap(DATA_BITMAP_SIZE);
+    ffs.seekg(0);
+    ffs.read(inode_bitmap.data(), INODE_BITMAP_SIZE);
+    ffs.read(data_bitmap.data(), DATA_BITMAP_SIZE);
+
+    int inode_idx = findFreeIndex(inode_bitmap);
+    if (inode_idx == -1) {
+        cout << "No free inode available\n";
+        return;
+    }
+
+    int data_idx = findFreeIndex(data_bitmap);
+    if (data_idx == -1) {
+        cout << "No free data block available\n";
+        return;
+    }
+
+    vector<char> buf(BLOCK_SIZE, 0);
+    src.read(buf.data(), BLOCK_SIZE);
+    int read_bytes = src.gcount();
+
+    long data_offset = INODE_BITMAP_SIZE + DATA_BITMAP_SIZE + INODE_TABLE_SIZE + (data_idx * BLOCK_SIZE);
+    ffs.seekp(data_offset);
+    ffs.write(buf.data(), BLOCK_SIZE);
+
+    Inode inode{};
+    strncpy(inode.filename, filename.c_str(), MAX_FILENAME);
+    inode.filesize = read_bytes;
+    inode.direct_ptrs[0] = data_idx;
+    inode.indirect_ptr = -1;
+
+    long inode_offset = INODE_BITMAP_SIZE + DATA_BITMAP_SIZE + (inode_idx * BLOCK_SIZE);
+    ffs.seekp(inode_offset);
+    ffs.write(reinterpret_cast<char*>(&inode), sizeof(Inode));
+
+    inode_bitmap[inode_idx] = 1;
+    data_bitmap[data_idx] = 1;
+    ffs.seekp(0);
+    ffs.write(inode_bitmap.data(), INODE_BITMAP_SIZE);
+    ffs.write(data_bitmap.data(), DATA_BITMAP_SIZE);
+
+    cout << "Imported " << filename << " (" << read_bytes << " bytes)\n";
+}
 
 int main() {
+    initFFS();
     cout << "$ ";  
     
     string line;
@@ -28,8 +128,8 @@ int main() {
             string filename;
             ss >> filename;
             if (filename.empty()) cout << "Usage: import <filename>\n";
-            else cout << "Importing file: " << filename << endl;
-        } 
+            else importFile(filename);
+        }
         else if (cmd == "ls") {
             cout << "Listing files (stub)...\n";
         } 
