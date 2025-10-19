@@ -134,6 +134,61 @@ void listFiles() {
         cout << "(No files in FFS)" << endl;
 }
 
+void deleteFile(const string& filename) {
+    fstream ffs(FFS_FILENAME, ios::in | ios::out | ios::binary);
+    if (!ffs.is_open()) {
+        cout << "Error: cannot open FFS storage\n";
+        return;
+    }
+
+    vector<char> inode_bitmap(INODE_BITMAP_SIZE);
+    vector<char> data_bitmap(DATA_BITMAP_SIZE);
+    ffs.seekg(0);
+    ffs.read(inode_bitmap.data(), INODE_BITMAP_SIZE);
+    ffs.read(data_bitmap.data(), DATA_BITMAP_SIZE);
+
+    bool found = false;
+
+    for (int i = 0; i < INODE_BITMAP_SIZE; i++) {
+        if (inode_bitmap[i] == 1) {
+            long inode_offset = INODE_BITMAP_SIZE + DATA_BITMAP_SIZE + (i * BLOCK_SIZE);
+            ffs.seekg(inode_offset);
+            Inode inode{};
+            ffs.read(reinterpret_cast<char*>(&inode), sizeof(Inode));
+
+            if (filename == inode.filename) {
+                found = true;
+
+                for (int j = 0; j < MAX_DIRECT_PTRS; j++) {
+                    int blockIdx = inode.direct_ptrs[j];
+                    if (blockIdx >= 0 && blockIdx < DATA_BLOCKS_SIZE / BLOCK_SIZE) {
+                        data_bitmap[blockIdx] = 0;
+                    } else {
+                        break;
+                    }
+                }
+
+                inode_bitmap[i] = 0;
+
+                Inode empty{};
+                ffs.seekp(inode_offset);
+                ffs.write(reinterpret_cast<char*>(&empty), sizeof(Inode));
+
+                cout << "Deleted file: " << filename << endl;
+                break;
+            }
+        }
+    }
+
+    if (!found) {
+        cout << "File not found: " << filename << endl;
+        return;
+    }
+
+    ffs.seekp(0);
+    ffs.write(inode_bitmap.data(), INODE_BITMAP_SIZE);
+    ffs.write(data_bitmap.data(), DATA_BITMAP_SIZE);
+}
 
 int main() {
     initFFS();
@@ -169,7 +224,7 @@ int main() {
             string filename;
             ss >> filename;
             if (filename.empty()) cout << "Usage: del <filename>\n";
-            else cout << "Deleting file: " << filename << endl;
+            else deleteFile(filename);
         } 
         else if (cmd == "mv") {
             string src, dest;
