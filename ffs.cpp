@@ -52,6 +52,8 @@ void importFile(const string& filename) {
         return;
     }
 
+
+    // Check file size and enforce limit
     src.seekg(0, ios::end);
     long long fileSize = src.tellg();
     src.seekg(0, ios::beg);
@@ -73,6 +75,7 @@ void importFile(const string& filename) {
     ffs.read(inode_bitmap.data(), INODE_BITMAP_SIZE);
     ffs.read(data_bitmap.data(), DATA_BITMAP_SIZE);
 
+    // Check free space considering incoming file size
     int freeBlocks = count(data_bitmap.begin(), data_bitmap.end(), 0);
     int neededBlocks = (fileSize + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
@@ -83,6 +86,7 @@ void importFile(const string& filename) {
         return;
     }
 
+    // Collect existing filenames to avoid duplicates
     vector<string> existingNames;
     for (int i = 0; i < INODE_BITMAP_SIZE; i++) {
         if (inode_bitmap[i] == 1) {
@@ -120,6 +124,7 @@ void importFile(const string& filename) {
     int block_count = 0;
     vector<char> buf(BLOCK_SIZE, 0);
 
+     // Write file data into free data blocks
     while (src.read(buf.data(), BLOCK_SIZE) || src.gcount() > 0) {
         int bytes_read = src.gcount();
         total_bytes += bytes_read;
@@ -244,6 +249,8 @@ void mvFile(const string& oldname, const string& newname) {
     ffs.seekg(0);
     ffs.read(inode_bitmap.data(), INODE_BITMAP_SIZE);
 
+    // Check name conflict
+
     bool found = false;
 
     for (int i = 0; i < INODE_BITMAP_SIZE; i++) {
@@ -300,6 +307,7 @@ void cpFile(const string& srcname, const string& destname) {
     ffs.read(inode_bitmap.data(), INODE_BITMAP_SIZE);
     ffs.read(data_bitmap.data(), DATA_BITMAP_SIZE);
 
+    // Check if dest already exists
     for (int i = 0; i < INODE_BITMAP_SIZE; i++) {
         if (inode_bitmap[i] == 1) {
             long inode_offset = INODE_BITMAP_SIZE + DATA_BITMAP_SIZE + (i * BLOCK_SIZE);
