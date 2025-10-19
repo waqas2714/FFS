@@ -52,6 +52,15 @@ void importFile(const string& filename) {
         return;
     }
 
+    src.seekg(0, ios::end);
+    long long fileSize = src.tellg();
+    src.seekg(0, ios::beg);
+
+    if (fileSize > MAX_FILE_SIZE) {
+        cout << "Error: file exceeds maximum allowed size (" << MAX_FILE_SIZE << " bytes)\n";
+        return;
+    }
+
     fstream ffs(FFS_FILENAME, ios::in | ios::out | ios::binary);
     if (!ffs.is_open()) {
         cout << "Error: cannot open FFS storage\n";
@@ -63,6 +72,16 @@ void importFile(const string& filename) {
     ffs.seekg(0);
     ffs.read(inode_bitmap.data(), INODE_BITMAP_SIZE);
     ffs.read(data_bitmap.data(), DATA_BITMAP_SIZE);
+
+    int freeBlocks = count(data_bitmap.begin(), data_bitmap.end(), 0);
+    int neededBlocks = (fileSize + BLOCK_SIZE - 1) / BLOCK_SIZE;
+
+    if (neededBlocks > freeBlocks) {
+        cout << "Error: not enough space in FFS.\n"
+             << "File requires " << neededBlocks << " blocks, but only "
+             << freeBlocks << " free blocks available.\n";
+        return;
+    }
 
     vector<string> existingNames;
     for (int i = 0; i < INODE_BITMAP_SIZE; i++) {
@@ -106,22 +125,12 @@ void importFile(const string& filename) {
         total_bytes += bytes_read;
 
         int data_idx = findFreeIndex(data_bitmap);
-        if (data_idx == -1) {
-            cout << "No free data block available\n";
-            break;
-        }
-
         long data_offset = INODE_BITMAP_SIZE + DATA_BITMAP_SIZE + INODE_TABLE_SIZE + (data_idx * BLOCK_SIZE);
         ffs.seekp(data_offset);
         ffs.write(buf.data(), bytes_read);
 
         inode.direct_ptrs[block_count++] = data_idx;
         data_bitmap[data_idx] = 1;
-
-        if (block_count >= MAX_DIRECT_PTRS) {
-            cout << "Warning: file exceeds maximum supported size (" << MAX_DIRECT_PTRS * BLOCK_SIZE << " bytes)\n";
-            break;
-        }
     }
 
     inode.filesize = total_bytes;
