@@ -5,6 +5,7 @@
 #include <vector>
 #include <filesystem>
 #include <cstring>
+#include <algorithm>
 
 using namespace std;
 namespace fs = std::filesystem;
@@ -64,6 +65,33 @@ void importFile(const string& filename) {
     ffs.read(inode_bitmap.data(), INODE_BITMAP_SIZE);
     ffs.read(data_bitmap.data(), DATA_BITMAP_SIZE);
 
+    vector<string> existingNames;
+    for (int i = 0; i < INODE_BITMAP_SIZE; i++) {
+        if (inode_bitmap[i] == 1) {
+            long inode_offset = INODE_BITMAP_SIZE + DATA_BITMAP_SIZE + (i * BLOCK_SIZE);
+            ffs.seekg(inode_offset);
+            Inode inode{};
+            ffs.read(reinterpret_cast<char*>(&inode), sizeof(Inode));
+            existingNames.push_back(inode.filename);
+        }
+    }
+
+    string baseName = filename;
+    string namePart = filename;
+    string extPart = "";
+
+    size_t dotPos = filename.find_last_of('.');
+    if (dotPos != string::npos) {
+        namePart = filename.substr(0, dotPos);
+        extPart = filename.substr(dotPos);
+    }
+
+    string finalName = filename;
+    int counter = 1;
+    while (find(existingNames.begin(), existingNames.end(), finalName) != existingNames.end()) {
+        finalName = namePart + "(" + to_string(counter++) + ")" + extPart;
+    }
+
     int inode_idx = findFreeIndex(inode_bitmap);
     if (inode_idx == -1) {
         cout << "No free inode available\n";
@@ -85,7 +113,7 @@ void importFile(const string& filename) {
     ffs.write(buf.data(), BLOCK_SIZE);
 
     Inode inode{};
-    strncpy(inode.filename, filename.c_str(), MAX_FILENAME);
+    strncpy(inode.filename, finalName.c_str(), MAX_FILENAME);
     inode.filesize = read_bytes;
     inode.direct_ptrs[0] = data_idx;
     inode.indirect_ptr = -1;
@@ -100,9 +128,8 @@ void importFile(const string& filename) {
     ffs.write(inode_bitmap.data(), INODE_BITMAP_SIZE);
     ffs.write(data_bitmap.data(), DATA_BITMAP_SIZE);
 
-    cout << "Imported " << filename << " (" << read_bytes << " bytes)\n";
+    cout << "Imported " << filename << " as " << finalName << " (" << read_bytes << " bytes)\n";
 }
-
 
 void listFiles() {
     fstream ffs(FFS_FILENAME, ios::in | ios::binary);
