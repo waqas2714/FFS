@@ -271,6 +271,102 @@ void mvFile(const string& oldname, const string& newname) {
     }
 }
 
+void cpFile(const string& srcname, const string& destname) {
+    fstream ffs(FFS_FILENAME, ios::in | ios::out | ios::binary);
+    if (!ffs.is_open()) {
+        cout << "Error: cannot open FFS storage\n";
+        return;
+    }
+
+    vector<char> inode_bitmap(INODE_BITMAP_SIZE);
+    vector<char> data_bitmap(DATA_BITMAP_SIZE);
+    ffs.seekg(0);
+    ffs.read(inode_bitmap.data(), INODE_BITMAP_SIZE);
+    ffs.read(data_bitmap.data(), DATA_BITMAP_SIZE);
+
+    for (int i = 0; i < INODE_BITMAP_SIZE; i++) {
+        if (inode_bitmap[i] == 1) {
+            long inode_offset = INODE_BITMAP_SIZE + DATA_BITMAP_SIZE + (i * BLOCK_SIZE);
+            ffs.seekg(inode_offset);
+            Inode inode{};
+            ffs.read(reinterpret_cast<char*>(&inode), sizeof(Inode));
+            if (destname == inode.filename) {
+                cout << "Error: destination file '" << destname << "' already exists.\n";
+                return;
+            }
+        }
+    }
+
+    Inode src_inode{};
+    bool found = false;
+    int src_inode_index = -1;
+
+    for (int i = 0; i < INODE_BITMAP_SIZE; i++) {
+        if (inode_bitmap[i] == 1) {
+            long inode_offset = INODE_BITMAP_SIZE + DATA_BITMAP_SIZE + (i * BLOCK_SIZE);
+            ffs.seekg(inode_offset);
+            ffs.read(reinterpret_cast<char*>(&src_inode), sizeof(Inode));
+
+            if (srcname == src_inode.filename) {
+                found = true;
+                src_inode_index = i;
+                break;
+            }
+        }
+    }
+
+    if (!found) {
+        cout << "File not found: " << srcname << endl;
+        return;
+    }
+
+    int new_inode_idx = findFreeIndex(inode_bitmap);
+    if (new_inode_idx == -1) {
+        cout << "No free inode available\n";
+        return;
+    }
+
+    Inode new_inode{};
+    strncpy(new_inode.filename, destname.c_str(), MAX_FILENAME - 1);
+    new_inode.filesize = src_inode.filesize;
+    new_inode.indirect_ptr = -1;
+
+    int total_blocks = (src_inode.filesize + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    for (int b = 0; b < total_blocks; b++) {
+        int src_block_idx = src_inode.direct_ptrs[b];
+        int dest_block_idx = findFreeIndex(data_bitmap);
+        if (dest_block_idx == -1) {
+            cout << "No free data block available\n";
+            return;
+        }
+
+        vector<char> buf(BLOCK_SIZE);
+        long src_offset = INODE_BITMAP_SIZE + DATA_BITMAP_SIZE + INODE_TABLE_SIZE + (src_block_idx * BLOCK_SIZE);
+        ffs.seekg(src_offset);
+        ffs.read(buf.data(), BLOCK_SIZE);
+
+        long dest_offset = INODE_BITMAP_SIZE + DATA_BITMAP_SIZE + INODE_TABLE_SIZE + (dest_block_idx * BLOCK_SIZE);
+        ffs.seekp(dest_offset);
+        ffs.write(buf.data(), BLOCK_SIZE);
+
+        new_inode.direct_ptrs[b] = dest_block_idx;
+        data_bitmap[dest_block_idx] = 1;
+    }
+
+    long inode_offset = INODE_BITMAP_SIZE + DATA_BITMAP_SIZE + (new_inode_idx * BLOCK_SIZE);
+    ffs.seekp(inode_offset);
+    ffs.write(reinterpret_cast<char*>(&new_inode), sizeof(Inode));
+
+    inode_bitmap[new_inode_idx] = 1;
+
+    ffs.seekp(0);
+    ffs.write(inode_bitmap.data(), INODE_BITMAP_SIZE);
+    ffs.write(data_bitmap.data(), DATA_BITMAP_SIZE);
+
+    cout << "Copied " << srcname << " -> " << destname << " (" << new_inode.filesize << " bytes)\n";
+}
+
+
 int main() {
     initFFS();
     cout << "$ ";  
@@ -317,7 +413,7 @@ int main() {
             string src, dest;
             ss >> src >> dest;
             if (src.empty() || dest.empty()) cout << "Usage: cp <src> <dest>\n";
-            else cout << "Copying " << src << " -> " << dest << endl;
+            else cpFile(src, dest);
         } 
         else {
             cout << "Unknown command: " << cmd << endl;
