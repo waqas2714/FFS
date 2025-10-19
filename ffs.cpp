@@ -27,7 +27,6 @@ struct Inode {
     char filename[MAX_FILENAME];
     int filesize;
     int direct_ptrs[MAX_DIRECT_PTRS];
-    int indirect_ptr;
 };
 
 void initFFS() {
@@ -76,10 +75,7 @@ void importFile(const string& filename) {
         }
     }
 
-    string baseName = filename;
-    string namePart = filename;
-    string extPart = "";
-
+    string namePart = filename, extPart = "";
     size_t dotPos = filename.find_last_of('.');
     if (dotPos != string::npos) {
         namePart = filename.substr(0, dotPos);
@@ -98,37 +94,48 @@ void importFile(const string& filename) {
         return;
     }
 
-    int data_idx = findFreeIndex(data_bitmap);
-    if (data_idx == -1) {
-        cout << "No free data block available\n";
-        return;
-    }
-
-    vector<char> buf(BLOCK_SIZE, 0);
-    src.read(buf.data(), BLOCK_SIZE);
-    int read_bytes = src.gcount();
-
-    long data_offset = INODE_BITMAP_SIZE + DATA_BITMAP_SIZE + INODE_TABLE_SIZE + (data_idx * BLOCK_SIZE);
-    ffs.seekp(data_offset);
-    ffs.write(buf.data(), BLOCK_SIZE);
-
     Inode inode{};
     strncpy(inode.filename, finalName.c_str(), MAX_FILENAME);
-    inode.filesize = read_bytes;
-    inode.direct_ptrs[0] = data_idx;
-    inode.indirect_ptr = -1;
+
+    int total_bytes = 0;
+    int block_count = 0;
+    vector<char> buf(BLOCK_SIZE, 0);
+
+    while (src.read(buf.data(), BLOCK_SIZE) || src.gcount() > 0) {
+        int bytes_read = src.gcount();
+        total_bytes += bytes_read;
+
+        int data_idx = findFreeIndex(data_bitmap);
+        if (data_idx == -1) {
+            cout << "No free data block available\n";
+            break;
+        }
+
+        long data_offset = INODE_BITMAP_SIZE + DATA_BITMAP_SIZE + INODE_TABLE_SIZE + (data_idx * BLOCK_SIZE);
+        ffs.seekp(data_offset);
+        ffs.write(buf.data(), bytes_read);
+
+        inode.direct_ptrs[block_count++] = data_idx;
+        data_bitmap[data_idx] = 1;
+
+        if (block_count >= MAX_DIRECT_PTRS) {
+            cout << "Warning: file exceeds maximum supported size (" << MAX_DIRECT_PTRS * BLOCK_SIZE << " bytes)\n";
+            break;
+        }
+    }
+
+    inode.filesize = total_bytes;
 
     long inode_offset = INODE_BITMAP_SIZE + DATA_BITMAP_SIZE + (inode_idx * BLOCK_SIZE);
     ffs.seekp(inode_offset);
     ffs.write(reinterpret_cast<char*>(&inode), sizeof(Inode));
 
     inode_bitmap[inode_idx] = 1;
-    data_bitmap[data_idx] = 1;
     ffs.seekp(0);
     ffs.write(inode_bitmap.data(), INODE_BITMAP_SIZE);
     ffs.write(data_bitmap.data(), DATA_BITMAP_SIZE);
 
-    cout << "Imported " << filename << " as " << finalName << " (" << read_bytes << " bytes)\n";
+    cout << "Imported " << filename << " as " << finalName << " (" << total_bytes << " bytes, " << block_count << " blocks)\n";
 }
 
 void listFiles() {
@@ -329,7 +336,6 @@ void cpFile(const string& srcname, const string& destname) {
     Inode new_inode{};
     strncpy(new_inode.filename, destname.c_str(), MAX_FILENAME - 1);
     new_inode.filesize = src_inode.filesize;
-    new_inode.indirect_ptr = -1;
 
     int total_blocks = (src_inode.filesize + BLOCK_SIZE - 1) / BLOCK_SIZE;
     for (int b = 0; b < total_blocks; b++) {
