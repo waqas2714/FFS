@@ -190,6 +190,60 @@ void deleteFile(const string& filename) {
     ffs.write(data_bitmap.data(), DATA_BITMAP_SIZE);
 }
 
+void mvFile(const string& oldname, const string& newname) {
+    fstream ffs(FFS_FILENAME, ios::in | ios::out | ios::binary);
+    if (!ffs.is_open()) {
+        cout << "Error: cannot open FFS storage\n";
+        return;
+    }
+
+    vector<char> inode_bitmap(INODE_BITMAP_SIZE);
+    ffs.seekg(0);
+    ffs.read(inode_bitmap.data(), INODE_BITMAP_SIZE);
+
+    bool found = false;
+
+    for (int i = 0; i < INODE_BITMAP_SIZE; i++) {
+        if (inode_bitmap[i] == 1) {
+            long inode_offset = INODE_BITMAP_SIZE + DATA_BITMAP_SIZE + (i * BLOCK_SIZE);
+            ffs.seekg(inode_offset);
+            Inode inode{};
+            ffs.read(reinterpret_cast<char*>(&inode), sizeof(Inode));
+
+            if (newname == inode.filename) {
+                cout << "Error: file with name '" << newname << "' already exists.\n";
+                return;
+            }
+        }
+    }
+
+    for (int i = 0; i < INODE_BITMAP_SIZE; i++) {
+        if (inode_bitmap[i] == 1) {
+            long inode_offset = INODE_BITMAP_SIZE + DATA_BITMAP_SIZE + (i * BLOCK_SIZE);
+            ffs.seekg(inode_offset);
+            Inode inode{};
+            ffs.read(reinterpret_cast<char*>(&inode), sizeof(Inode));
+
+            if (oldname == inode.filename) {
+                found = true;
+
+                memset(inode.filename, 0, MAX_FILENAME);
+                strncpy(inode.filename, newname.c_str(), MAX_FILENAME - 1);
+
+                ffs.seekp(inode_offset);
+                ffs.write(reinterpret_cast<char*>(&inode), sizeof(Inode));
+
+                cout << "Renamed " << oldname << " -> " << newname << endl;
+                break;
+            }
+        }
+    }
+
+    if (!found) {
+        cout << "File not found: " << oldname << endl;
+    }
+}
+
 int main() {
     initFFS();
     cout << "$ ";  
@@ -230,7 +284,7 @@ int main() {
             string src, dest;
             ss >> src >> dest;
             if (src.empty() || dest.empty()) cout << "Usage: mv <oldname> <newname>\n";
-            else cout << "Renaming " << src << " -> " << dest << endl;
+            else mvFile(src, dest);
         } 
         else if (cmd == "cp") {
             string src, dest;
