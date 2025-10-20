@@ -27,6 +27,7 @@ struct Inode {
     char filename[MAX_FILENAME];
     int filesize;
     int direct_ptrs[MAX_DIRECT_PTRS];
+    int indirect_ptr;
 };
 
 void initFFS() {
@@ -121,23 +122,46 @@ void importFile(const string& filename) {
     strncpy(inode.filename, finalName.c_str(), MAX_FILENAME);
 
     int total_bytes = 0;
-    int block_count = 0;
+    int direct_count = 0;
+    int indirect_count = 0;
     vector<char> buf(BLOCK_SIZE, 0);
+    inode.indirect_ptr = -1;
 
-     // Write file data into free data blocks
     while (src.read(buf.data(), BLOCK_SIZE) || src.gcount() > 0) {
         int bytes_read = src.gcount();
         total_bytes += bytes_read;
 
         int data_idx = findFreeIndex(data_bitmap);
+        if (data_idx == -1) {
+            cout << "Error: no free block available.\n";
+            break;
+        }
+
         long data_offset = INODE_BITMAP_SIZE + DATA_BITMAP_SIZE + INODE_TABLE_SIZE + (data_idx * BLOCK_SIZE);
         ffs.seekp(data_offset);
         ffs.write(buf.data(), bytes_read);
-
-        inode.direct_ptrs[block_count++] = data_idx;
         data_bitmap[data_idx] = 1;
-    }
+        
+        // If some ptrs are remaining, use them otherwise use indirect one
+        if (direct_count < MAX_DIRECT_PTRS) {
+            inode.direct_ptrs[direct_count++] = data_idx;
+        } else {
+            if (inode.indirect_ptr == -1) {
+                inode.indirect_ptr = findFreeIndex(data_bitmap);
+                if (inode.indirect_ptr == -1) {
+                    cout << "Error: cannot allocate indirect block.\n";
+                    break;
+                }
+                data_bitmap[inode.indirect_ptr] = 1;
+            }
 
+            long indir_offset = INODE_BITMAP_SIZE + DATA_BITMAP_SIZE + INODE_TABLE_SIZE +
+                                (inode.indirect_ptr * BLOCK_SIZE) + (indirect_count * sizeof(int));
+            ffs.seekp(indir_offset);
+            ffs.write(reinterpret_cast<char*>(&data_idx), sizeof(int));
+            indirect_count++;
+        }
+    }
     inode.filesize = total_bytes;
 
     long inode_offset = INODE_BITMAP_SIZE + DATA_BITMAP_SIZE + (inode_idx * BLOCK_SIZE);
@@ -149,7 +173,7 @@ void importFile(const string& filename) {
     ffs.write(inode_bitmap.data(), INODE_BITMAP_SIZE);
     ffs.write(data_bitmap.data(), DATA_BITMAP_SIZE);
 
-    cout << "Imported " << filename << " as " << finalName << " (" << total_bytes << " bytes, " << block_count << " blocks)\n";
+    cout << "Imported " << filename << " as " << finalName << " (" << total_bytes << " bytes)\n";
 }
 
 void listFiles() {
@@ -209,15 +233,25 @@ void deleteFile(const string& filename) {
 
                 for (int j = 0; j < MAX_DIRECT_PTRS; j++) {
                     int blockIdx = inode.direct_ptrs[j];
-                    if (blockIdx >= 0 && blockIdx < DATA_BLOCKS_SIZE / BLOCK_SIZE) {
+                    if (blockIdx >= 0 && blockIdx < DATA_BLOCKS_SIZE / BLOCK_SIZE)
                         data_bitmap[blockIdx] = 0;
-                    } else {
-                        break;
+                }
+
+                if (inode.indirect_ptr != -1) {
+                    long indir_offset = INODE_BITMAP_SIZE + DATA_BITMAP_SIZE + INODE_TABLE_SIZE +
+                                        (inode.indirect_ptr * BLOCK_SIZE);
+                    ffs.seekg(indir_offset);
+
+                    int block_index;
+                    while (ffs.read(reinterpret_cast<char*>(&block_index), sizeof(int))) {
+                        if (block_index < 0 || block_index >= DATA_BLOCKS_SIZE / BLOCK_SIZE) break;
+                        data_bitmap[block_index] = 0;
                     }
+
+                    data_bitmap[inode.indirect_ptr] = 0;
                 }
 
                 inode_bitmap[i] = 0;
-
                 Inode empty{};
                 ffs.seekp(inode_offset);
                 ffs.write(reinterpret_cast<char*>(&empty), sizeof(Inode));
@@ -307,7 +341,6 @@ void cpFile(const string& srcname, const string& destname) {
     ffs.read(inode_bitmap.data(), INODE_BITMAP_SIZE);
     ffs.read(data_bitmap.data(), DATA_BITMAP_SIZE);
 
-    // Check if dest already exists
     for (int i = 0; i < INODE_BITMAP_SIZE; i++) {
         if (inode_bitmap[i] == 1) {
             long inode_offset = INODE_BITMAP_SIZE + DATA_BITMAP_SIZE + (i * BLOCK_SIZE);
@@ -323,8 +356,6 @@ void cpFile(const string& srcname, const string& destname) {
 
     Inode src_inode{};
     bool found = false;
-    int src_inode_index = -1;
-
     for (int i = 0; i < INODE_BITMAP_SIZE; i++) {
         if (inode_bitmap[i] == 1) {
             long inode_offset = INODE_BITMAP_SIZE + DATA_BITMAP_SIZE + (i * BLOCK_SIZE);
@@ -333,7 +364,6 @@ void cpFile(const string& srcname, const string& destname) {
 
             if (srcname == src_inode.filename) {
                 found = true;
-                src_inode_index = i;
                 break;
             }
         }
@@ -353,10 +383,14 @@ void cpFile(const string& srcname, const string& destname) {
     Inode new_inode{};
     strncpy(new_inode.filename, destname.c_str(), MAX_FILENAME - 1);
     new_inode.filesize = src_inode.filesize;
+    new_inode.indirect_ptr = -1;  
 
     int total_blocks = (src_inode.filesize + BLOCK_SIZE - 1) / BLOCK_SIZE;
-    for (int b = 0; b < total_blocks; b++) {
+
+    for (int b = 0; b < min(total_blocks, MAX_DIRECT_PTRS); b++) {
         int src_block_idx = src_inode.direct_ptrs[b];
+        if (src_block_idx < 0) break;
+
         int dest_block_idx = findFreeIndex(data_bitmap);
         if (dest_block_idx == -1) {
             cout << "No free data block available\n";
@@ -376,12 +410,54 @@ void cpFile(const string& srcname, const string& destname) {
         data_bitmap[dest_block_idx] = 1;
     }
 
+    if (src_inode.indirect_ptr != -1) {
+        new_inode.indirect_ptr = findFreeIndex(data_bitmap);
+        if (new_inode.indirect_ptr == -1) {
+            cout << "No space for indirect pointer block.\n";
+            return;
+        }
+        data_bitmap[new_inode.indirect_ptr] = 1;
+
+        long src_indir_offset = INODE_BITMAP_SIZE + DATA_BITMAP_SIZE + INODE_TABLE_SIZE +
+                                (src_inode.indirect_ptr * BLOCK_SIZE);
+        ffs.seekg(src_indir_offset);
+
+        int src_block_idx;
+        int offset_counter = 0;
+
+        while (ffs.read(reinterpret_cast<char*>(&src_block_idx), sizeof(int))) {
+            if (src_block_idx < 0 || src_block_idx >= DATA_BLOCKS_SIZE / BLOCK_SIZE) break;
+
+            int dest_block_idx = findFreeIndex(data_bitmap);
+            if (dest_block_idx == -1) {
+                cout << "No free data block for indirect copy.\n";
+                return;
+            }
+
+            vector<char> buf(BLOCK_SIZE);
+            long src_offset = INODE_BITMAP_SIZE + DATA_BITMAP_SIZE + INODE_TABLE_SIZE + (src_block_idx * BLOCK_SIZE);
+            ffs.seekg(src_offset);
+            ffs.read(buf.data(), BLOCK_SIZE);
+
+            long dest_offset = INODE_BITMAP_SIZE + DATA_BITMAP_SIZE + INODE_TABLE_SIZE + (dest_block_idx * BLOCK_SIZE);
+            ffs.seekp(dest_offset);
+            ffs.write(buf.data(), BLOCK_SIZE);
+
+            long dest_indir_offset = INODE_BITMAP_SIZE + DATA_BITMAP_SIZE + INODE_TABLE_SIZE +
+                                     (new_inode.indirect_ptr * BLOCK_SIZE) +
+                                     (offset_counter++ * sizeof(int));
+            ffs.seekp(dest_indir_offset);
+            ffs.write(reinterpret_cast<char*>(&dest_block_idx), sizeof(int));
+
+            data_bitmap[dest_block_idx] = 1;
+        }
+    }
+
     long inode_offset = INODE_BITMAP_SIZE + DATA_BITMAP_SIZE + (new_inode_idx * BLOCK_SIZE);
     ffs.seekp(inode_offset);
     ffs.write(reinterpret_cast<char*>(&new_inode), sizeof(Inode));
 
     inode_bitmap[new_inode_idx] = 1;
-
     ffs.seekp(0);
     ffs.write(inode_bitmap.data(), INODE_BITMAP_SIZE);
     ffs.write(data_bitmap.data(), DATA_BITMAP_SIZE);
